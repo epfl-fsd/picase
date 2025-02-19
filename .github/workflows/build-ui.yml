@@ -6,7 +6,7 @@ on:
 
 env:
     REGISTRY: ghcr.io
-    REPOSITORY: epfl-fsd/PiCase
+    REPOSITORY: epfl-fsd/picase
 
 jobs:
     get-release-info:
