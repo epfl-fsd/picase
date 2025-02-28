@@ -1,0 +1,7 @@
+k3s_version: v1.32.1+k3s1
+k3s_token: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=48') }}"
+k3s_server_location: /var/lib/rancher/k3s
+k3s_use_embedded_etcd: true
+cgroup_enable: "memory"
+cgroup_memory_enable: "1"
+_secrets: "{{ lookup('pipe', 'keybase fs read /keybase/team/epfl_idevfsd/picase/ansible_secrets.yml') | from_yaml }}"
