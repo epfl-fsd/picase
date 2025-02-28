@@ -1,0 +1,74 @@
+---
+- name: Create .kube directory locally
+  ansible.builtin.file:
+      path: "{{ lookup('env', 'HOME') }}/.kube"
+      state: directory
+      mode: '0755'
+  delegate_to: localhost
+  become: false
+
+- name: Get K3s kubeconfig content
+  ansible.builtin.slurp:
+      src: /etc/rancher/k3s/k3s.yaml
+  register: k3s_config
+
+- name: Create temporary directory
+  ansible.builtin.tempfile:
+      state: directory
+  register: temp_dir
+  delegate_to: localhost
+  become: false
+
+- name: Write new k3s config to temporary file
+  ansible.builtin.copy:
+      content: "{{ k3s_config.content | b64decode | replace('127.0.0.1', hostvars[groups['master'][0]]['ansible_host']) | replace('default', 'picase') }}"
+      dest: '{{ temp_dir.path }}/k3s.yaml'
+      mode: '0600'
+  delegate_to: localhost
+  become: false
+
+- name: Check if .kube/config exists
+  ansible.builtin.stat:
+      path: "{{ lookup('env', 'HOME') }}/.kube/config"
+  register: kube_config
+  delegate_to: localhost
+  become: false
+
+- name: Backup existing config if it exists
+  ansible.builtin.copy:
+      src: "{{ lookup('env', 'HOME') }}/.kube/config"
+      dest: "{{ lookup('env', 'HOME') }}/.kube/config.backup.{{ ansible_date_time.epoch }}"
+      mode: '0600'
+  when: kube_config.stat.exists
+  delegate_to: localhost
+  become: false
+
+- name: Install yq if falset present
+  ansible.builtin.pip:
+      name: yq
+      state: present
+  delegate_to: localhost
+  become: false
+
+- name: Merge kubeconfig files
+  ansible.builtin.shell: |
+      if [ -f {{ lookup('env', 'HOME') }}/.kube/config ]; then
+        KUBECONFIG={{ lookup('env', 'HOME') }}/.kube/config:{{ temp_dir.path }}/k3s.yaml kubectl config view --flatten > {{ temp_dir.path }}/merged_config
+        mv {{ temp_dir.path }}/merged_config {{ lookup('env', 'HOME') }}/.kube/config
+      else
+        cp {{ temp_dir.path }}/k3s.yaml {{ lookup('env', 'HOME') }}/.kube/config
+      fi
+  delegate_to: localhost
+  become: false
+
+- name: Set correct permissions on merged config
+  ansible.builtin.file:
+      path: "{{ lookup('env', 'HOME') }}/.kube/config"
+      mode: '0600'
+  delegate_to: localhost
+  become: false
+
+- name: Set current context to picase
+  ansible.builtin.shell: kubectl config use-context picase
+  delegate_to: localhost
+  become: false

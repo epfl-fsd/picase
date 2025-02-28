@@ -1,0 +1,176 @@
+---
+- name: Check if K3s is already installed
+  ansible.builtin.stat:
+      path: /usr/local/bin/k3s
+  register: k3s_binary
+  when: inventory_hostname == groups['master'][0]
+
+- name: Check K3s service state on first control plane node
+  ansible.builtin.shell: systemctl is-active k3s || echo "not-active"
+  register: k3s_service_state
+  when: inventory_hostname == groups['master'][0]
+
+- name: Wait for K3s to finish activating (if in that state)
+  ansible.builtin.shell: |
+      for i in $(seq 1 10); do
+        if [ "$(systemctl is-active k3s)" = "activating" ]; then
+          echo "K3s is activating, waiting... (attempt $i/10)"
+          sleep 10
+        else
+          break
+        fi
+      done
+      systemctl is-active k3s || echo "not-active"
+  register: k3s_final_state
+  when:
+      - inventory_hostname == groups['master'][0]
+      - k3s_service_state.stdout == "activating"
+
+- name: Check if K3s is functioning properly
+  ansible.builtin.shell: |
+      kubectl get nodes || echo "cluster-not-ready"
+  register: k3s_cluster_status
+  failed_when: false
+  when:
+      - inventory_hostname == groups['master'][0]
+      - (k3s_final_state.stdout is defined and k3s_final_state.stdout == "active") or
+        (k3s_service_state.stdout == "active" and k3s_final_state.stdout is not defined)
+
+- name: Reset failed K3s service if it exists but is broken
+  ansible.builtin.shell: |
+      systemctl stop k3s || true
+      systemctl reset-failed k3s || true
+      systemctl disable k3s || true
+      [ -f /usr/local/bin/k3s-killall.sh ] && /usr/local/bin/k3s-killall.sh || true
+  when:
+      - inventory_hostname == groups['master'][0]
+      - k3s_binary.stat.exists|default(false)
+      - (k3s_final_state.stdout is defined and k3s_final_state.stdout != "active") or
+        (k3s_service_state.stdout != "active" and k3s_service_state.stdout != "activating" and k3s_final_state.stdout is not defined) or
+        (k3s_cluster_status.rc != 0 and k3s_service_state.stdout == "active")
+
+- name: Deploy first control plane node
+  ansible.builtin.shell: |
+      curl -sfL https://get.k3s.io | sh -s - server \
+      --token={{ k3s_token }} \
+      --tls-san={{ ansible_host }} \
+      --cluster-init \
+      --etcd-expose-metrics=true \
+      --kubelet-arg="max-pods=110" \
+  when:
+      - inventory_hostname == groups['master'][0]
+      - (k3s_final_state.stdout is defined and k3s_final_state.stdout != "active") or
+        (k3s_service_state.stdout != "active" and k3s_service_state.stdout != "activating" and k3s_final_state.stdout is not defined) or
+        (k3s_cluster_status.rc != 0 and k3s_service_state.stdout == "active")
+  register: k3s_install_result
+  failed_when: k3s_install_result.rc != 0 and "Node password already set" not in k3s_install_result.stderr
+
+- name: Wait for K3s service to be active after installation
+  ansible.builtin.shell: |
+      for i in $(seq 1 30); do
+        if [ "$(systemctl is-active k3s)" = "active" ]; then
+          echo "K3s is now active"
+          break
+        elif [ "$(systemctl is-active k3s)" = "activating" ]; then
+          echo "K3s is still activating (attempt $i/30)"
+        else
+          echo "K3s is in unexpected state: $(systemctl is-active k3s)"
+        fi
+        sleep 10
+        if [ $i -eq 30 ]; then
+          echo "Timed out waiting for K3s"
+          exit 1
+        fi
+      done
+  register: k3s_activation_wait
+  when:
+      - inventory_hostname == groups['master'][0]
+      - k3s_install_result.changed|default(false)
+
+- name: Wait for first control node to be ready
+  ansible.builtin.wait_for:
+      path: /var/lib/rancher/k3s/server/node-token
+      timeout: 300
+  when: inventory_hostname == groups['master'][0]
+  register: k3s_first_node_ready
+
+- name: Wait for kubectl to be functional
+  ansible.builtin.shell: |
+      for i in $(seq 1 15); do
+        if kubectl get nodes >/dev/null 2>&1; then
+          echo "Kubernetes API is responsive"
+          exit 0
+        else
+          echo "Waiting for Kubernetes API... (attempt $i/15)"
+          sleep 10
+        fi
+      done
+      echo "Timed out waiting for Kubernetes API"
+      exit 1
+  when: inventory_hostname == groups['master'][0]
+  register: kubectl_ready
+
+- name: Get K3s token
+  ansible.builtin.slurp:
+      src: /var/lib/rancher/k3s/server/node-token
+  register: node_token
+  when: inventory_hostname == groups['master'][0]
+
+- name: Store control node token
+  ansible.builtin.set_fact:
+      k3s_node_token: "{{ node_token['content'] | b64decode | trim }}"
+  when: inventory_hostname == groups['master'][0]
+
+- name: Share token with other nodes
+  ansible.builtin.set_fact:
+      k3s_node_token: "{{ hostvars[groups['master'][0]]['k3s_node_token'] }}"
+  when: inventory_hostname != groups['master'][0]
+
+- name: Check K3s service state on additional control plane nodes
+  ansible.builtin.shell: systemctl is-active k3s || echo "not-active"
+  register: k3s_additional_service_state
+  when: inventory_hostname != groups['master'][0] and inventory_hostname in groups['master']
+
+- name: Deploy additional control plane nodes
+  ansible.builtin.shell: |
+      curl -sfL https://get.k3s.io | sh -s - server \
+      --token={{ k3s_node_token }} \
+      --tls-san={{ ansible_host }} \
+      --server https://{{ hostvars[groups['master'][0]]['ansible_host'] }}:6443 \
+      --etcd-expose-metrics=true \
+      --kubelet-arg="max-pods=110" \
+  when:
+      - inventory_hostname != groups['master'][0]
+      - inventory_hostname in groups['master']
+      - k3s_additional_service_state.stdout != "active"
+  register: k3s_additional_install_result
+  failed_when: k3s_additional_install_result.rc != 0 and "Node password already set" not in k3s_additional_install_result.stderr
+  changed_when: k3s_additional_install_result.rc == 0 or "Node password already set" in k3s_additional_install_result.stderr
+
+- name: Wait for additional control plane nodes to be active
+  ansible.builtin.shell: |
+      for i in $(seq 1 30); do
+        if [ "$(systemctl is-active k3s)" = "active" ]; then
+          echo "K3s is now active on additional control plane node"
+          break
+        elif [ "$(systemctl is-active k3s)" = "activating" ]; then
+          echo "K3s is still activating on additional node (attempt $i/30)"
+        else
+          echo "K3s is in unexpected state on additional node: $(systemctl is-active k3s)"
+        fi
+        sleep 10
+        if [ $i -eq 30 ]; then
+          echo "Timed out waiting for K3s on additional control plane node"
+          exit 1
+        fi
+      done
+  register: k3s_additional_activation_wait
+  when:
+      - inventory_hostname != groups['master'][0]
+      - inventory_hostname in groups['master']
+      - k3s_additional_install_result.changed|default(false)
+
+- name: Export node token for workers
+  ansible.builtin.set_fact:
+      k3s_node_token: "{{ hostvars[groups['master'][0]]['k3s_node_token'] }}"
+  when: inventory_hostname == groups['master'][0]
