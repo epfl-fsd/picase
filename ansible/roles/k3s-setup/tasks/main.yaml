@@ -4,6 +4,7 @@
       path: "{{ lookup('env', 'HOME') }}/.kube"
       state: directory
       mode: '0755'
+  run_once: true
   delegate_to: localhost
   become: false
 
@@ -11,19 +12,23 @@
   ansible.builtin.slurp:
       src: /etc/rancher/k3s/k3s.yaml
   register: k3s_config
+  run_once: true
+  when: ansible_hostname == groups['master'][0]
 
 - name: Create temporary directory
   ansible.builtin.tempfile:
       state: directory
   register: temp_dir
+  run_once: true
   delegate_to: localhost
   become: false
 
 - name: Write new k3s config to temporary file
   ansible.builtin.copy:
-      content: "{{ k3s_config.content | b64decode | replace('127.0.0.1', hostvars[groups['master'][0]]['ansible_host']) | replace('default', 'picase') }}"
+      content: "{{ k3s_config.content | b64decode | replace('127.0.0.1', k3s_public_address) | replace('default', 'picase') }}"
       dest: '{{ temp_dir.path }}/k3s.yaml'
       mode: '0600'
+  run_once: true
   delegate_to: localhost
   become: false
 
@@ -31,6 +36,7 @@
   ansible.builtin.stat:
       path: "{{ lookup('env', 'HOME') }}/.kube/config"
   register: kube_config
+  run_once: true
   delegate_to: localhost
   become: false
 
@@ -40,6 +46,7 @@
       dest: "{{ lookup('env', 'HOME') }}/.kube/config.backup.{{ ansible_date_time.epoch }}"
       mode: '0600'
   when: kube_config.stat.exists
+  run_once: true
   delegate_to: localhost
   become: false
 
@@ -47,6 +54,7 @@
   ansible.builtin.pip:
       name: yq
       state: present
+  run_once: true
   delegate_to: localhost
   become: false
 
@@ -58,6 +66,7 @@
       else
         cp {{ temp_dir.path }}/k3s.yaml {{ lookup('env', 'HOME') }}/.kube/config
       fi
+  run_once: true
   delegate_to: localhost
   become: false
 
@@ -65,10 +74,12 @@
   ansible.builtin.file:
       path: "{{ lookup('env', 'HOME') }}/.kube/config"
       mode: '0600'
+  run_once: true
   delegate_to: localhost
   become: false
 
 - name: Set current context to picase
   ansible.builtin.shell: kubectl config use-context picase
+  run_once: true
   delegate_to: localhost
   become: false
