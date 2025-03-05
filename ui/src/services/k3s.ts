@@ -14,22 +14,13 @@ export async function getPods(): Promise<PodType[]> {
 export async function getNodes(): Promise<NodeType[]> {
 	const nodes = await coreV1Api.listNode();
 	const pods = await getPods();
-	return [
-		...nodes.items.map((node) => ({
-			id: node.metadata?.uid || '',
-			name: node.metadata?.name || '',
-			role: node.metadata?.labels?.['kubernetes.io/role'] || '',
-			status: node.status?.conditions?.find((condition) => condition.type === 'Ready')?.status || '',
-			pods: pods.filter((pod) => pod.node === node.metadata?.name),
-		})),
-		...nodes.items.map((node) => ({
-			id: node.metadata?.uid || '',
-			name: node.metadata?.name || '',
-			role: node.metadata?.labels?.['kubernetes.io/role'] || '',
-			status: 'Unknown',
-			pods: pods.filter((pod) => pod.node === node.metadata?.name),
-		})),
-	];
+	return nodes.items.map((node) => ({
+		id: node.metadata?.uid || '',
+		name: node.metadata?.name || '',
+		role: node.metadata?.labels?.['kubernetes.io/role'] || '',
+		status: node.status?.conditions?.find((condition) => condition.type === 'Ready')?.status || '',
+		pods: pods.filter((pod) => pod.node === node.metadata?.name),
+	}));
 }
 
 export async function getDeployments(): Promise<DeploymentType[]> {
