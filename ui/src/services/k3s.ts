@@ -5,7 +5,7 @@ export async function getPods(): Promise<PodType[]> {
 	const pods = await coreV1Api.listNamespacedPod({ namespace: process.env.NAMESPACE || 'default' });
 	return pods.items.map((pod) => ({
 		name: pod.metadata?.name || '',
-		status: pod.status?.phase || '',
+		status: pod.metadata?.deletionTimestamp ? 'Terminating' : pod.status?.phase || '',
 		age: new Date(pod.metadata?.creationTimestamp ?? ''),
 		node: pod.spec?.nodeName || '',
 	}));
