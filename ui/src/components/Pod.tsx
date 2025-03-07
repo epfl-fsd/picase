@@ -19,6 +19,10 @@ export const Pod: React.FC<{ pod: PodType; node: NodeType }> = ({ pod, node }) =
 		}
 	};
 
+	if (pod.status === 'Terminating') {
+		return;
+	}
+
 	return (
 		<div className={cn('bg-white/10 rounded-lg aspect-square flex flex-col items-center justify-center p-3', getPodStatusColor(pod.status, node.status))}>
 			<span className="text-xs uppercase font-bold truncate w-full text-center" title={pod.name}>
